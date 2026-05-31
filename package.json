@@ -1,0 +1,15 @@
+{
+  "name": "octo-order-converter",
+  "version": "1.0.0",
+  "description": "셀러페이/네이버 스마트스토어 주문 → 발주서·이카운트 판매입력 변환기",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

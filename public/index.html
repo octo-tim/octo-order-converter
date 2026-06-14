@@ -219,6 +219,15 @@
     </div>
   </section>
 
+  <section id="historySec" class="hidden">
+    <div class="sec-h"><span class="sec-n">6</span><span class="sec-t">변환 이력</span><span class="sec-aside" id="histAside">— 건 저장됨</span></div>
+    <div class="warnbar" id="histInfo" style="display:block;background:var(--paper-2);border-color:var(--line);color:var(--ink-soft)">업로드한 원본과 변환 결과(발주서·이카운트)가 이 브라우저에 저장됩니다. 항목의 버튼으로 발주서·이카운트·원본을 다시 내려받을 수 있습니다.</div>
+    <div class="maptable"><div class="mapscroll" id="histRows" style="max-height:320px"></div></div>
+    <div style="margin-top:10px;display:flex;gap:14px;flex-wrap:wrap">
+      <span class="miniup" id="histClearBtn">이력 전체 삭제</span>
+    </div>
+  </section>
+
   <section id="rulesSec" class="hidden">
     <details><summary>변환 · 매핑 규칙 자세히 보기</summary>
       <div class="rule">
@@ -266,9 +275,20 @@ function detectColor(t){const n=norm(t);let b="";COLOR_KEYS().forEach(c=>{if(n.i
 function detectShape(t){return/코너/.test(t)?"코너형":/사이드/.test(t)?"사이드형":/센터/.test(t)?"센터형":"";}
 function detectSize(t){let m=t.match(/([LMS])\s*사이즈/);if(m)return m[1].toUpperCase();m=t.match(/(?:^|[^A-Za-z])([LMS])(?:$|[^A-Za-z])/);return m?m[1].toUpperCase():"";}
 function itemName(code){const m=MASTER.find(x=>x.c===code);return m?m.n:"";}
+// 네이버 특수 품목 규칙 매핑 (시공샘플/쿠션패드/스킨텍스처)
+function naverRuleCode(prod,option){
+  const t=(prod||"")+" "+(option||"");
+  if(/시공샘플|샘플박스|샘플세트|봄봄\s*샘플/.test(t)) return "네이처실리샘플세트";
+  if(/쿠션패드|눌림방지/.test(t)) return "00121";
+  if(/스킨텍스처|스킨텍스쳐/.test(t)&&/갤럭시화이트/.test(t)&&/센터/.test(t))
+    return /그란데/.test(t) ? "25GWC-SG1200" : "6BEGWC-SP6000";
+  return "";
+}
 function matchItem(prod,option){
   const primary=String(option||"").split(/\n/)[0];
   const comp=/\n/.test(option)||/악세사리|추가\s*매트|추가\s*세트/.test(option);
+  const rule=naverRuleCode(prod,option);
+  if(rule&&itemName(rule)) return {code:rule,name:itemName(rule),conf:"high"};
   if(/쿠션패드/.test(prod||"")&&!detectColor(primary))return PAD_CODE?{code:PAD_CODE,name:itemName(PAD_CODE),conf:"high"}:{code:"",name:"",conf:"none"};
   const color=detectColor(primary);
   const isSet=/세트|[LMS]\s*사이즈|총\s*\d+\s*장|\d{3}\s*[×xX]\s*\d{3}/.test(primary);
@@ -381,12 +401,13 @@ function readOrders(file){
       if(!fmt){ setBusy(false);$("#dropEmpty").classList.remove("hidden"); toast("셀러페이/네이버 양식을 인식하지 못했습니다"); return; }
       SRC=fmt.src; RAW=toCanonical(aoa,fmt);
       if(!RAW.length){ setBusy(false);$("#dropEmpty").classList.remove("hidden"); toast("주문 데이터가 없습니다"); return; }
+      CURFILE={name:file.name, bytes:u8, size:file.size, enc:enc};
       setBusy(false); drop.classList.add("has"); $("#dropFull").classList.remove("hidden");
       const ico=$("#fileIco"); ico.className="file-ico "+SRC; ico.textContent=SRC==="naver"?"N":"SP";
       $("#fname").innerHTML=esc(file.name)+`<span class="srcpill ${SRC}">${SRC==="naver"?"네이버 스마트스토어":"셀러페이"}${enc?" · 복호화됨":""}</span>`;
       $("#fmeta").textContent=(file.size/1024).toFixed(0)+" KB · 데이터 "+RAW.length.toLocaleString()+"행";
       buildStatusChips(); render();
-      ["settings","mapSec","result","download","rulesSec"].forEach(id=>$("#"+id).classList.remove("hidden"));
+      ["settings","mapSec","result","download","rulesSec","historySec"].forEach(id=>$("#"+id).classList.remove("hidden"));
       toast(`${SRC==="naver"?"네이버":"셀러페이"} 주문 ${RAW.length.toLocaleString()}행을 읽었습니다`);
     }catch(err){console.error(err);setBusy(false);$("#dropEmpty").classList.remove("hidden");toast("파일을 읽는 중 오류가 발생했습니다");}
     },30);
@@ -425,12 +446,60 @@ function resolveMappings(rows){MAPPING={};rows.forEach(r=>{const k=optKey(r.prod
     MAPPING[k]={...res,prod:r.prodName,opt:r.option,count:0};}
   MAPPING[k].count++;});}
 
-function filtered(){const allow=new Set(selectedStatuses());return RAW.filter(r=>allow.has(r.status||"미지정"));}
+function isExcluded(r){ return r.src==="naver" && /네쇼라/.test(r.prodName||""); }
+function filtered(){const allow=new Set(selectedStatuses());return RAW.filter(r=>allow.has(r.status||"미지정")&&!isExcluded(r));}
 let PO=[],EC=[];
+// 클립 개수 = ceil(2*센터 + 1.5*사이드 + 1*코너)
+function clipCount(c,s,k){return Math.ceil(2*c+1.5*s+1*k);}
+// 클립매트 색상 목록 / 세트 구성
+const MAT_COLORS=["오가닉스톤 화이트","오가닉스톤 베이지","마블스노우","마블네이처","갤럭시화이트","갤럭시네이처"];
+const SET_COMPO={L:[8,12,4],S:[4,8,4]};   // [센터,사이드,코너]
+function matColor(o){const n=norm(o);for(const c of MAT_COLORS){if(n.includes(norm(c)))return c;}return "";}
+// 네이버 옵션정보 파싱: 컬러/타입/세트 (콜론·슬래시 형식 모두 지원)
+function naverParse(opt){
+  const o=clean(opt);
+  const color=matColor(o);
+  const sm=o.match(/\[세트\]\s*([LMS])/);const set=sm?sm[1].toUpperCase():"";
+  let shape="";if(/코너/.test(o))shape="코너";else if(/사이드/.test(o))shape="사이드";else if(/센터/.test(o))shape="센터";
+  return {color,shape,set};
+}
+// 네이버 물류 발주서 물품명 생성 (세트 전개 + 클립 자동계산)
+function naverItemName(lines){
+  const mats={};const sets=[];const others=[];
+  lines.forEach(l=>{
+    const p=naverParse(l.option);
+    const isPad=/쿠션패드|눌림방지|악세사리/.test(l.option+" "+l.prodName);
+    if(isPad){ others.push(`가구 눌림방지 쿠션패드(10EA) ${l.qty}개`); return; }
+    if(p.set){ sets.push([p.color||"컬러미확인",p.set,l.qty]); return; }
+    if(p.shape){
+      const key=p.color||"컬러미확인";
+      mats[key]=mats[key]||{센터:0,사이드:0,코너:0};
+      mats[key][p.shape]+=l.qty;
+    }else{
+      others.push(`${clean(l.prodName)||cleanOpt(l.option)} ${l.qty}개`);
+    }
+  });
+  const segs=[];
+  Object.keys(mats).forEach(color=>{
+    const m=mats[color];const bits=[];
+    if(m.센터)bits.push(`센터 ${m.센터}개`);
+    if(m.사이드)bits.push(`사이드 ${m.사이드}개`);
+    if(m.코너)bits.push(`코너 ${m.코너}개`);
+    segs.push(`[슈슈비 클립매트] ${color} ${bits.join(", ")} / 클립 ${clipCount(m.센터,m.사이드,m.코너)}개`);
+  });
+  sets.forEach(([color,sf,q])=>{
+    const cmp=SET_COMPO[sf]||[0,0,0];const c=cmp[0]*q,s=cmp[1]*q,k=cmp[2]*q;
+    segs.push(`[슈슈비 클립매트] ${color} ${sf}세트 센터 ${c}개, 사이드 ${s}개, 코너 ${k}개 / 클립 ${clipCount(c,s,k)}개`);
+  });
+  return segs.concat(others).join(" / ");
+}
 function buildPO(rows){const groups=new Map();rows.forEach(r=>{if(!groups.has(r.ordNo))groups.set(r.ordNo,[]);groups.get(r.ordNo).push(r);});
-  const out=[];for(const[no,lines]of groups){const f=lines[0];let qty=0;const parts=[];
-    lines.forEach(l=>{qty+=l.qty;parts.push(`${cleanOpt(l.option)||l.prodName} ${l.qty}${unitFor(l.prodName,l.option)}`);});
-    out.push({"주문번호":no,"수하인명":f.receiver,"수하인휴대폰":f.recvPhone,"수하인전화":f.recvPhone2||"","수하인주소":f.addr,"우편번호":f.zip,"수량":qty,"운임금액":"","배송메세지":f.msg,"물품명":parts.join(", ")});}
+  const out=[];for(const[no,lines]of groups){const f=lines[0];let qty=0;
+    lines.forEach(l=>{qty+=l.qty;});
+    let name;
+    if(f.src==="naver"){ name=naverItemName(lines); }
+    else { const parts=[]; lines.forEach(l=>{parts.push(`${cleanOpt(l.option)||l.prodName} ${l.qty}${unitFor(l.prodName,l.option)}`);}); name=parts.join(", "); }
+    out.push({"주문번호":no,"수하인명":f.receiver,"수하인휴대폰":f.recvPhone,"수하인전화":f.recvPhone2||"","수하인주소":f.addr,"우편번호":f.zip,"수량":qty,"운임금액":"","배송메세지":f.msg,"물품명":name});}
   return out;}
 function buildEC(rows){const dmode=segVal("dateMode"),fixed=$("#fixedDate").value.replace(/-/g,""),vat=segVal("vatMode"),cust=segVal("custMode");
   return rows.map(r=>{const qty=r.qty,amount=r.amount;let supply,tax;
@@ -492,14 +561,66 @@ function renderTable(){const head=activeTab==="po"?PO_HEAD:EC_HEAD,data=activeTa
 $("#resetMapBtn").addEventListener("click",()=>{OVERRIDE={};saveOverride();render();toast("저장된 수동매핑을 초기화했습니다");});
 
 function latestDate(){let best="";RAW.forEach(r=>{const d=ymd(r.ordDate);if(d>best)best=d;});return best||ymd(new Date());}
-function exportXlsx(head,data,sheet,prefix){const aoa=[head,...data.map(o=>head.map(h=>o[h]))];const ws=XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"]=head.map(h=>({wch:Math.min(Math.max(h.length*2.2,10),46)}));const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,sheet);
-  XLSX.writeFile(wb,`${prefix}_${SRC==="naver"?"네이버":"셀러페이"}_${latestDate()}.xlsx`);}
-$("#dlPo").addEventListener("click",()=>{if(!PO.length)return;exportXlsx(PO_HEAD,PO,"Sheet1","옥토아이앤씨_발주서");toast("발주서를 다운로드했습니다");});
-$("#dlEc").addEventListener("click",()=>{if(!EC.length)return;exportXlsx(EC_HEAD,EC,"판매입력","이카운트_판매입력");toast("이카운트 판매입력을 다운로드했습니다");});
+function buildBook(head,data,sheet){const aoa=[head,...data.map(o=>head.map(h=>o[h]))];const ws=XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"]=head.map(h=>({wch:Math.min(Math.max(h.length*2.2,10),46)}));const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,sheet);return wb;}
+function exportXlsx(head,data,sheet,prefix){XLSX.writeFile(buildBook(head,data,sheet),`${prefix}_${SRC==="naver"?"네이버":"셀러페이"}_${latestDate()}.xlsx`);}
+function bookBytes(head,data,sheet){return XLSX.write(buildBook(head,data,sheet),{type:"array",bookType:"xlsx"});}
+$("#dlPo").addEventListener("click",()=>{if(!PO.length)return;exportXlsx(PO_HEAD,PO,"Sheet1","옥토아이앤씨_발주서");toast("발주서를 다운로드했습니다");saveHistory();});
+$("#dlEc").addEventListener("click",()=>{if(!EC.length)return;exportXlsx(EC_HEAD,EC,"판매입력","이카운트_판매입력");toast("이카운트 판매입력을 다운로드했습니다");saveHistory();});
+
+/* ===== 변환 이력 (IndexedDB: 원본+발주서+이카운트 보관) ===== */
+let CURFILE=null, SAVED_KEY=null;
+const DB_NAME="octo_convert_history",STORE="records";
+function idb(){return new Promise((res,rej)=>{const rq=indexedDB.open(DB_NAME,1);
+  rq.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains(STORE))db.createObjectStore(STORE,{keyPath:"id"});};
+  rq.onsuccess=e=>res(e.target.result);rq.onerror=e=>rej(e.target.error);});}
+function idbPut(rec){return idb().then(db=>new Promise((res,rej)=>{const tx=db.transaction(STORE,"readwrite");tx.objectStore(STORE).put(rec);tx.oncomplete=()=>res();tx.onerror=e=>rej(e.target.error);}));}
+function idbAll(){return idb().then(db=>new Promise((res,rej)=>{const rq=db.transaction(STORE,"readonly").objectStore(STORE).getAll();rq.onsuccess=()=>res(rq.result||[]);rq.onerror=e=>rej(e.target.error);}));}
+function idbGet(id){return idb().then(db=>new Promise((res,rej)=>{const rq=db.transaction(STORE,"readonly").objectStore(STORE).get(id);rq.onsuccess=()=>res(rq.result);rq.onerror=e=>rej(e.target.error);}));}
+function idbDel(id){return idb().then(db=>new Promise((res,rej)=>{const tx=db.transaction(STORE,"readwrite");tx.objectStore(STORE).delete(id);tx.oncomplete=()=>res();tx.onerror=e=>rej(e.target.error);}));}
+function idbClear(){return idb().then(db=>new Promise((res,rej)=>{const tx=db.transaction(STORE,"readwrite");tx.objectStore(STORE).clear();tx.oncomplete=()=>res();tx.onerror=e=>rej(e.target.error);}));}
+async function saveHistory(){
+  if(!CURFILE||(!PO.length&&!EC.length))return;
+  const key=SRC+"|"+CURFILE.name+"|"+RAW.length;
+  if(SAVED_KEY===key)return; SAVED_KEY=key;
+  const rec={id:Date.now()+"_"+Math.random().toString(36).slice(2,7),ts:Date.now(),src:SRC,fileName:CURFILE.name,enc:!!CURFILE.enc,
+    orders:new Set(filtered().map(r=>r.ordNo)).size,lines:filtered().length,poRows:PO.length,ecRows:EC.length,
+    amount:EC.reduce((a,e)=>a+(Number(e["공급가액"])||0)+(Number(e["부가세"])||0),0),
+    origBytes:CURFILE.bytes,poBytes:bookBytes(PO_HEAD,PO,"Sheet1"),ecBytes:bookBytes(EC_HEAD,EC,"판매입력"),date:latestDate()};
+  try{await idbPut(rec);await renderHistory();}catch(e){console.error(e);toast("이력 저장 실패(저장공간 확인)");}
+}
+function dlBytes(bytes,fname){const blob=new Blob([bytes],{type:"application/octet-stream"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=fname;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
+async function renderHistory(){
+  let recs=[];try{recs=(await idbAll()).sort((a,b)=>b.ts-a.ts);}catch(e){}
+  $("#histAside").textContent=`${recs.length}건 저장됨`;
+  const host=$("#histRows");host.innerHTML="";
+  if(!recs.length){host.innerHTML='<div class="prev-note">저장된 이력이 없습니다. 발주서·이카운트를 다운로드하면 자동 저장됩니다.</div>';return;}
+  recs.forEach(r=>{
+    const d=new Date(r.ts);const dt=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+    const row=document.createElement("div");row.className="maprow";row.style.gridTemplateColumns="1.5fr auto";
+    row.innerHTML=`<div class="src"><b>${esc(r.fileName)}</b><span>${dt} · <span class="srcpill ${r.src}">${r.src==="naver"?"네이버":"셀러페이"}</span> 주문 ${r.orders}건 · 발주서 ${r.poRows} · 이카운트 ${r.ecRows} · ${Math.round(r.amount).toLocaleString()}원</span></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+        <button class="file-x" data-act="po" data-id="${r.id}" style="color:var(--ink)">발주서</button>
+        <button class="file-x" data-act="ec" data-id="${r.id}" style="color:var(--amber-deep)">이카운트</button>
+        <button class="file-x" data-act="orig" data-id="${r.id}">원본</button>
+        <button class="file-x" data-act="del" data-id="${r.id}">삭제</button>
+      </div>`;
+    host.appendChild(row);
+  });
+  host.querySelectorAll("button[data-act]").forEach(b=>b.addEventListener("click",async()=>{
+    const id=b.dataset.id,act=b.dataset.act,r=await idbGet(id);if(!r)return;
+    const tag=r.src==="naver"?"네이버":"셀러페이";
+    if(act==="po")dlBytes(r.poBytes,`옥토아이앤씨_발주서_${tag}_${r.date}.xlsx`);
+    else if(act==="ec")dlBytes(r.ecBytes,`이카운트_판매입력_${tag}_${r.date}.xlsx`);
+    else if(act==="orig")dlBytes(r.origBytes,r.fileName);
+    else if(act==="del"){await idbDel(id);renderHistory();toast("이력을 삭제했습니다");}
+  }));
+}
+$("#histClearBtn").addEventListener("click",async()=>{await idbClear();renderHistory();toast("이력을 전체 삭제했습니다");});
 
 $("#masterBadge").textContent="품목현황 "+MASTER.length.toLocaleString()+"개 내장";
 $("#tplWh").textContent=TPL_COMMON.wh;$("#tplPay").textContent=TPL_COMMON.pay;$("#tplBiz").textContent=BIZ.seller;
+renderHistory();
 </script>
 </body>
 </html>

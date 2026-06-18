@@ -291,12 +291,14 @@ function matchItem(prod,option){
   if(rule&&itemName(rule)) return {code:rule,name:itemName(rule),conf:"high"};
   if(/쿠션패드/.test(prod||"")&&!detectColor(primary))return PAD_CODE?{code:PAD_CODE,name:itemName(PAD_CODE),conf:"high"}:{code:"",name:"",conf:"none"};
   const color=detectColor(primary);
-  const isSet=/세트|[LMS]\s*사이즈|총\s*\d+\s*장|\d{3}\s*[×xX]\s*\d{3}/.test(primary);
+  // 진짜 세트: 사이즈/치수/총N장 구성이 있을 때만. "세트" 단어만 있고 형태(센터/사이드/코너)가 명시되면 낱장.
+  const hasShape=/센터|사이드|코너/.test(primary);
+  const isSet=(/[LMS]\s*사이즈|총\s*\d+\s*장|\d{3}\s*[×xX]\s*\d{3}/.test(primary)) || (/세트/.test(primary)&&!hasShape);
   if(color){
     if(isSet){const sz=detectSize(primary);
       if(sz&&SET_MAP[color+"|"+sz]){const c=SET_MAP[color+"|"+sz];return{code:c,name:itemName(c),conf:comp?"rev":"high"};}
       if(SET_MAP[color+"|L"]){const c=SET_MAP[color+"|L"];return{code:c,name:itemName(c),conf:"rev"};}
-    }else{const sh=detectShape(primary);if(sh&&SINGLE_MAP[color+"|"+sh]){const c=SINGLE_MAP[color+"|"+sh];return{code:c,name:itemName(c),conf:comp?"rev":"high"};}}
+    }else{const sh=detectShape(primary);if(sh&&SINGLE_MAP[color+"|"+sh]){const c=SINGLE_MAP[color+"|"+sh];return{code:c,name:itemName(c),conf:"high"};}}
   }
   const fb=fuzzy((prod||"")+" "+(option||""));if(fb)return{code:fb.c,name:fb.n,conf:"rev"};
   return{code:"",name:"",conf:"none"};
@@ -493,12 +495,34 @@ function naverItemName(lines){
   });
   return segs.concat(others).join(" / ");
 }
+// 셀러페이 발주서 물품명: 색상/형태/총수량으로 정리 (단품·세트 분류어 무시, 진짜 세트만 세트 처리)
+function sellerRealSet(o){return /사이즈|\d{3}\s*[×xX]\s*\d{3}|총\s*\d+\s*장/.test(o);}
+function sellerColor(o){const n=norm(o);for(const c of MAT_COLORS){if(n.includes(norm(c)))return c;}return detectColor(o);}
+function sellerItemName(lines){
+  const mats={};const sets=[];const others=[];
+  lines.forEach(l=>{
+    const o=clean(l.option);const q=l.qty;
+    if(/쿠션패드|눌림방지/.test(o+" "+l.prodName)){ others.push(`${cleanOpt(o)||clean(l.prodName)} ${q}개`); return; }
+    const color=sellerColor(o);
+    if(sellerRealSet(o)){ sets.push([color,o,q]); return; }     // 진짜 세트
+    const shape=detectShape(o);                                   // 센터형/사이드형/코너형
+    if(color&&shape){ const key=color+"|"+shape; mats[key]=(mats[key]||0)+q; }
+    else others.push(`${cleanOpt(o)||l.prodName} ${q}장`);
+  });
+  const setSegs=[],matSegs=[];
+  Object.keys(mats).forEach(k=>{const i=k.indexOf("|");const c=k.slice(0,i),sh=k.slice(i+1);matSegs.push(`${c}/${sh} ${mats[k]}장`);});
+  sets.forEach(([c,o,q])=>{
+    const cm=o.match(/\(([^)]*센터[^)]*)\)/);const inner=cm?cm[1].replace(/\s*\/\s*/g," / "):"";
+    setSegs.push(`${c}/(${inner}) ${q}세트`);
+  });
+  return setSegs.concat(matSegs,others).join(", ");
+}
 function buildPO(rows){const groups=new Map();rows.forEach(r=>{if(!groups.has(r.ordNo))groups.set(r.ordNo,[]);groups.get(r.ordNo).push(r);});
   const out=[];for(const[no,lines]of groups){const f=lines[0];let qty=0;
     lines.forEach(l=>{qty+=l.qty;});
     let name;
     if(f.src==="naver"){ name=naverItemName(lines); }
-    else { const parts=[]; lines.forEach(l=>{parts.push(`${cleanOpt(l.option)||l.prodName} ${l.qty}${unitFor(l.prodName,l.option)}`);}); name=parts.join(", "); }
+    else { name=sellerItemName(lines); }
     out.push({"주문번호":no,"수하인명":f.receiver,"수하인휴대폰":f.recvPhone,"수하인전화":f.recvPhone2||"","수하인주소":f.addr,"우편번호":f.zip,"수량":qty,"운임금액":"","배송메세지":f.msg,"물품명":name});}
   return out;}
 function buildEC(rows){const dmode=segVal("dateMode"),fixed=$("#fixedDate").value.replace(/-/g,""),vat=segVal("vatMode"),cust=segVal("custMode");
